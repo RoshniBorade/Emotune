@@ -349,3 +349,95 @@ def refine_hindi_lyrics(lyrics: str, action: str, max_retries: int = 3) -> str:
         "Please try again in a few moments."
     )
 
+
+def recommend_music_parameters(emotion_data: dict, story_prompt: str, lyrics: str, max_retries: int = 2) -> dict:
+    """
+    Recommends music parameters based on emotion, story, and lyrics.
+    Returns a dictionary with recommended values for mood, tempo, genre, voice_type, and pitch.
+    """
+    default_result = {
+        "mood": "Romantic",
+        "tempo": "Medium",
+        "genre": "Bollywood",
+        "voice_type": "Male",
+        "pitch": "Medium"
+    }
+
+    if not api_key or api_key == "Paste_Your_Real_Gemini_Key_Here" or genai is None:
+        return default_result
+
+    p_emotion = emotion_data.get("primary_emotion", "Romantic") if emotion_data else "Romantic"
+    intensity = emotion_data.get("emotion_intensity", 0.75) if emotion_data else 0.75
+
+    system_prompt = (
+        "You are an expert music producer and AI composer.\n"
+        "Recommend the best music generation parameters based on the detected emotion, user's story, and lyrics.\n"
+        "You MUST choose exactly ONE option from each of the following categories:\n"
+        "- 'mood': [\"Romantic\", \"Happy\", \"Sad\", \"Angry\", \"Energetic\", \"Chill\"]\n"
+        "- 'tempo': [\"Medium\", \"Slow\", \"Fast\"]\n"
+        "- 'genre': [\"Bollywood\", \"Pop\", \"Rock\", \"Ghazal\", \"Classical\", \"Hip Hop\"]\n"
+        "- 'voice_type': [\"Male\", \"Female\", \"Duet\"]\n"
+        "- 'pitch': [\"Medium\", \"Low\", \"High\"]\n\n"
+        "Respond ONLY with a valid JSON object matching this exact format:\n"
+        '{"mood": "Sad", "tempo": "Slow", "genre": "Ghazal", "voice_type": "Male", "pitch": "Low"}'
+    )
+
+    full_prompt = (
+        f"{system_prompt}\n\n"
+        f"Detected Emotion: {p_emotion}\n"
+        f"Intensity: {intensity}\n"
+        f"Story/Prompt: {story_prompt}\n\n"
+        f"Lyrics Snippet: {lyrics[:200]}..."
+    )
+
+    fallback_models = [
+        "gemini-2.5-flash",
+        "gemini-flash-lite-latest",
+        "gemini-flash-latest"
+    ]
+
+    for model_name in fallback_models:
+        for attempt in range(max_retries):
+            try:
+                client = genai.Client(api_key=api_key)
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=full_prompt
+                )
+                text_out = response.text.strip()
+                if text_out.startswith("```json"):
+                    text_out = text_out[7:]
+                if text_out.startswith("```"):
+                    text_out = text_out[3:]
+                if text_out.endswith("```"):
+                    text_out = text_out[:-3]
+                text_out = text_out.strip()
+
+                parsed = json.loads(text_out)
+                
+                def get_valid(key, options, default):
+                    val = parsed.get(key, "").strip().capitalize()
+                    # Handle multi-word cases like "Hip hop" -> "Hip Hop"
+                    if key == "genre" and val.lower() == "hip hop": val = "Hip Hop"
+                    return val if val in options else default
+
+                return {
+                    "mood": get_valid("mood", ["Romantic", "Happy", "Sad", "Angry", "Energetic", "Chill"], "Romantic"),
+                    "tempo": get_valid("tempo", ["Medium", "Slow", "Fast"], "Medium"),
+                    "genre": get_valid("genre", ["Bollywood", "Pop", "Rock", "Ghazal", "Classical", "Hip Hop"], "Bollywood"),
+                    "voice_type": get_valid("voice_type", ["Male", "Female", "Duet"], "Male"),
+                    "pitch": get_valid("pitch", ["Medium", "Low", "High"], "Medium")
+                }
+
+            except Exception as e:
+                error_str = str(e)
+                if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str or "quota" in error_str.lower():
+                    safe_print(f"[WARN] Quota exceeded on {model_name}, switching to next fallback...")
+                    break
+                if attempt < max_retries - 1:
+                    time.sleep(1)
+                    continue
+                break
+
+    return default_result
+

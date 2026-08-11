@@ -13,6 +13,7 @@ An emotion-driven music generation app that creates personalized songs based on 
   - 🔄 **Rewrite Chorus**: Generates catchy, hooky chorus variations
   - ➕ **Add Verse**: Appends story-consistent new verses
   - ✂️ **Shorten Lyrics**: Condenses track structure cleanly
+- 🤖 **AI Music Parameter Recommendation System**: Analyzes detected emotion, intensity, user story, and lyrics to dynamically recommend optimal `Mood`, `Tempo`, `Genre`, `Voice Type`, and `Pitch` settings with 2-option user control ("Accept Recommendations" vs "Customize Manually").
 - 🎛️ **AI Music Renderer**: Renders full audio tracks via PiAPI (Qubico/ACE-Step model) matching customized Mood, Tempo, Genre, Voice Type, and Pitch parameters.
 - ⚡ **Multi-Model Resilient Fallback**: Automatic failover (`gemini-2.5-flash` → `gemini-flash-lite-latest`) with instant 429 rate-limit handling and non-blocking state UI rendering.
 

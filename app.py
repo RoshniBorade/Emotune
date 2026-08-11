@@ -1,6 +1,11 @@
 import streamlit as st
-from utils.llm_api import generate_hindi_lyrics, refine_hindi_lyrics, detect_emotion
+from utils.llm_api import generate_hindi_lyrics, refine_hindi_lyrics, detect_emotion, recommend_music_parameters
 from utils.music_api import generate_music_task, poll_music_task
+from utils.db import (
+    save_song, get_recent_songs, get_song_by_id,
+    delete_song, update_song_rating,
+    is_db_connected, get_connection_error,
+)
 
 st.set_page_config(page_title="EMOTUNE", layout="wide", page_icon="🎵")
 
@@ -243,13 +248,25 @@ st.markdown("""
 <p class="emotune-sub">AI-Powered Hindi Music Studio</p>
 """, unsafe_allow_html=True)
 
-# ── Session state ─────────────────────────────────────────────────────────
-for k, v in [("step", 1), ("lyrics", ""), ("song_url", ""), ("is_generating_music", False), ("emotion_data", None)]:
+# ── Session state ─────────────────────────────────────────────────────────────
+for k, v in [
+    ("step",                   1),
+    ("lyrics",                 ""),
+    ("song_url",               ""),
+    ("story_prompt",           ""),   # persisted so Music Renderer can save it
+    ("is_generating_music",    False),
+    ("emotion_data",           None),
+    ("music_params",           None),
+    ("recommendation_accepted",False),
+    ("show_recommendations",   False),
+    ("last_saved_song_id",     None),  # EMO-XXXXXXXX of the most recently saved song
+    ("history_selected_id",   None),  # song currently open in History detail view
+]:
     if k not in st.session_state:
         st.session_state[k] = v
 
 # ── Pages via tabs ────────────────────────────────────────────────────────
-tab_lyrics, tab_music = st.tabs(["♪  Lyrics Studio", "🎛  Music Renderer"])
+tab_lyrics, tab_music, tab_history = st.tabs(["♪  Lyrics Studio", "🎛  Music Renderer", "📚  Song History"])
 
 # ════════════════════════════════════════════════════════════════════════════
 # PAGE 1 — LYRICS STUDIO
@@ -273,7 +290,10 @@ with tab_lyrics:
             else:
                 with st.spinner("Analyzing emotion & writing poetic Hindi lyrics…"):
                     emotion_res = detect_emotion(story_prompt)
-                    st.session_state.emotion_data = emotion_res
+                    st.session_state.emotion_data   = emotion_res
+                    st.session_state.story_prompt   = story_prompt  # persist for DB save
+                    st.session_state.last_saved_song_id = None       # reset on new song
+                    st.session_state.song_url       = ""             # clear previous audio
                     gen_result = generate_hindi_lyrics(story_prompt, emotion_data=emotion_res)
                     st.session_state.lyrics = gen_result
                     st.session_state["lyrics_editor"] = gen_result
@@ -432,17 +452,67 @@ with tab_music:
             st.markdown('<div class="section-label">🎛️ Studio Parameters</div>', unsafe_allow_html=True)
             st.caption("Set the vibe for your composition.")
 
-            p1, p2 = st.columns(2)
-            with p1:
-                mood       = st.selectbox("Mood",       ["Romantic", "Happy", "Sad", "Angry", "Energetic", "Chill"])
-                tempo      = st.selectbox("Tempo",      ["Medium", "Slow", "Fast"])
-                voice_type = st.selectbox("Voice Type", ["Male", "Female", "Duet"])
-            with p2:
-                pitch = st.selectbox("Pitch", ["Medium", "Low", "High"])
-                style = st.selectbox("Genre/Style", ["Bollywood", "Pop", "Rock", "Ghazal", "Classical", "Hip Hop"])
+            # Default indices
+            mood_options = ["Romantic", "Happy", "Sad", "Angry", "Energetic", "Chill"]
+            tempo_options = ["Medium", "Slow", "Fast"]
+            voice_options = ["Male", "Female", "Duet"]
+            pitch_options = ["Medium", "Low", "High"]
+            genre_options = ["Bollywood", "Pop", "Rock", "Ghazal", "Classical", "Hip Hop"]
 
-            st.markdown('<div class="staff-divider"><div class="staff-line"></div><span class="staff-note">𝄞</span><div class="staff-line"></div></div>', unsafe_allow_html=True)
-            render_clicked = st.button("🚀  Render Song", use_container_width=True)
+            if not st.session_state.music_params:
+                with st.spinner("Analyzing song for AI recommendations..."):
+                    story_prompt = getattr(st.session_state, "story_prompt", "")
+                    st.session_state.music_params = recommend_music_parameters(
+                        st.session_state.emotion_data, story_prompt, st.session_state.lyrics
+                    )
+
+            rec_params = st.session_state.music_params
+
+            if not st.session_state.recommendation_accepted and not st.session_state.show_recommendations:
+                st.markdown("### AI Recommendations Available!")
+                st.write(f"**Mood:** {rec_params['mood']} | **Tempo:** {rec_params['tempo']} | **Genre:** {rec_params['genre']}")
+                st.write(f"**Voice:** {rec_params['voice_type']} | **Pitch:** {rec_params['pitch']}")
+                
+                c1, c2 = st.columns(2)
+                with c1:
+                    if st.button("✅ Accept AI Recommendations", use_container_width=True):
+                        st.session_state.recommendation_accepted = True
+                        st.session_state.show_recommendations = True
+                        st.rerun()
+                with c2:
+                    if st.button("⚙️ Customize Manually", use_container_width=True):
+                        st.session_state.show_recommendations = True
+                        st.rerun()
+
+            if st.session_state.show_recommendations:
+                # If they accepted recommendations, set the default index to the recommended value
+                # If not, let them start with defaults or previously set values
+                
+                def get_idx(options, val):
+                    try:
+                        return options.index(val)
+                    except ValueError:
+                        return 0
+
+                idx_mood = get_idx(mood_options, rec_params["mood"]) if st.session_state.recommendation_accepted else 0
+                idx_tempo = get_idx(tempo_options, rec_params["tempo"]) if st.session_state.recommendation_accepted else 0
+                idx_voice = get_idx(voice_options, rec_params["voice_type"]) if st.session_state.recommendation_accepted else 0
+                idx_pitch = get_idx(pitch_options, rec_params["pitch"]) if st.session_state.recommendation_accepted else 0
+                idx_genre = get_idx(genre_options, rec_params["genre"]) if st.session_state.recommendation_accepted else 0
+
+                p1, p2 = st.columns(2)
+                with p1:
+                    mood       = st.selectbox("Mood",       mood_options, index=idx_mood)
+                    tempo      = st.selectbox("Tempo",      tempo_options, index=idx_tempo)
+                    voice_type = st.selectbox("Voice Type", voice_options, index=idx_voice)
+                with p2:
+                    pitch = st.selectbox("Pitch", pitch_options, index=idx_pitch)
+                    style = st.selectbox("Genre/Style", genre_options, index=idx_genre)
+
+                st.markdown('<div class="staff-divider"><div class="staff-line"></div><span class="staff-note">𝄞</span><div class="staff-line"></div></div>', unsafe_allow_html=True)
+                render_clicked = st.button("🚀  Render Song", use_container_width=True)
+            else:
+                render_clicked = False
             st.markdown('</div>', unsafe_allow_html=True)
 
             if render_clicked:
@@ -466,9 +536,16 @@ with tab_music:
                         poll_result = poll_music_task(task_id)
 
                         if poll_result["status"] == "success":
-                            st.session_state.song_url = poll_result["audio_url"]
+                            audio_url = poll_result["audio_url"]
+                            st.session_state.song_url          = audio_url
                             st.session_state.is_generating_music = False
-                            st.success("Masterpiece Rendered!")
+                            # Store params so the Save button can use them
+                            st.session_state["_rendered_params"] = {
+                                "mood": mood, "tempo": tempo,
+                                "voice_type": voice_type, "pitch": pitch,
+                                "genre": style, "tags": tags,
+                            }
+                            st.success("🎉 Masterpiece Rendered!")
                         else:
                             st.error(f"Failed to generate: {poll_result.get('message')}")
                             st.session_state.is_generating_music = False
@@ -479,7 +556,28 @@ with tab_music:
             if st.session_state.song_url:
                 st.markdown("### 💿 Your Track")
                 st.audio(st.session_state.song_url, format="audio/mp3")
-                st.balloons()
+
+                st.markdown('<div class="staff-divider"><div class="staff-line"></div><span class="staff-note">💾</span><div class="staff-line"></div></div>', unsafe_allow_html=True)
+
+                # ── Explicit Save button (only shown after successful render) ──
+                if st.session_state.last_saved_song_id:
+                    st.success(f"✅ Saved to library as **{st.session_state.last_saved_song_id}** — visit the 📚 Song History tab to view it.")
+                else:
+                    if st.button("💾  Save to Song Library", use_container_width=True):
+                        rp = st.session_state.get("_rendered_params", {})
+                        sid, db_err = save_song(
+                            story_prompt = st.session_state.get("story_prompt", ""),
+                            emotion      = st.session_state.emotion_data or {},
+                            lyrics       = st.session_state.lyrics,
+                            music_params = rp,
+                            audio_url    = st.session_state.song_url,
+                        )
+                        if db_err:
+                            st.warning(f"Could not save: {db_err}")
+                        else:
+                            st.session_state.last_saved_song_id = sid
+                            st.rerun()
+
             elif not st.session_state.is_generating_music:
                 st.markdown("""
                 <div style="height:260px;display:flex;flex-direction:column;align-items:center;
@@ -493,3 +591,261 @@ with tab_music:
                 """, unsafe_allow_html=True)
 
             st.markdown('</div>', unsafe_allow_html=True)
+
+# ════════════════════════════════════════════════════════════════════════════
+# PAGE 3 — SONG HISTORY  (MongoDB)
+# ════════════════════════════════════════════════════════════════════════════
+with tab_history:
+
+    # ── Connection status banner ──────────────────────────────────────────
+    if is_db_connected():
+        st.success("🟢  MongoDB connected", icon="✅")
+    else:
+        st.warning(
+            f"🔴  MongoDB not connected — {get_connection_error()}",
+        )
+        st.info(
+            "**How to connect:**\n"
+            "1. Create a free cluster at https://www.mongodb.com/cloud/atlas\n"
+            "2. Copy your **Connection String**\n"
+            "3. Open `.env` and set `MONGODB_URI=<your string>`\n"
+            "4. Restart the app with `streamlit run app.py`"
+        )
+
+    if not is_db_connected():
+        st.stop()
+
+    # ── Fetch all songs ───────────────────────────────────────────────────
+    songs, fetch_err = get_recent_songs(limit=50)
+    if fetch_err:
+        st.error(f"Could not load songs: {fetch_err}")
+        st.stop()
+
+    # ── Empty state ───────────────────────────────────────────────────────
+    if not songs:
+        st.markdown("""
+        <div style="height:300px;display:flex;flex-direction:column;align-items:center;
+                    justify-content:center;gap:14px;opacity:0.3;">
+            <span style="font-size:4rem;">🎵</span>
+            <span style="font-family:'Bebas Neue',sans-serif;font-size:1.3rem;
+                         letter-spacing:5px;color:#c8195a;">
+                No songs saved yet
+            </span>
+            <span style="font-size:0.9rem;color:#6b7280;">Render & save your first track in the Music Renderer tab</span>
+        </div>
+        """, unsafe_allow_html=True)
+
+    else:
+        # ── Layout: sidebar list  |  detail panel ────────────────────────
+        hist_list_col, hist_detail_col = st.columns([1, 2], gap="large")
+
+        with hist_list_col:
+            st.markdown('<div class="glass-card">', unsafe_allow_html=True)
+            st.markdown('<div class="section-label">📚 Song Library</div>', unsafe_allow_html=True)
+            st.caption(f"{len(songs)} track{'s' if len(songs) != 1 else ''} saved")
+            st.markdown('<div class="staff-divider"><div class="staff-line"></div><span class="staff-note">♪</span><div class="staff-line"></div></div>', unsafe_allow_html=True)
+
+            EMOTION_EMOJI = {
+                "Happy": "😊", "Sad": "😢", "Romantic": "❤️",
+                "Angry": "🤬", "Motivational": "🔥", "Nostalgic": "🌧️",
+                "Calm": "🌿", "Excited": "⚡",
+            }
+
+            for song in songs:
+                sid          = song["song_id"]
+                date_label   = song.get("created_at_str", "")[:11]
+                emo_name     = song.get("emotion", {}).get("primary_emotion", "")
+                genre_label  = song.get("music_params", {}).get("genre", "")
+                emo_emoji    = EMOTION_EMOJI.get(emo_name, "🎵")
+                rating_stars = "★" * (song.get("rating") or 0)
+                is_selected  = (st.session_state.history_selected_id == sid)
+
+                btn_label = (
+                    f"{emo_emoji} {date_label}\n"
+                    f"{emo_name} · {genre_label}\n"
+                    f"{rating_stars or '☆ unrated'}"
+                )
+                btn_style = "background:rgba(200,25,90,0.18);" if is_selected else ""
+
+                st.markdown(
+                    f'<div style="{btn_style}border-radius:10px;margin-bottom:2px;">',
+                    unsafe_allow_html=True,
+                )
+                if st.button(btn_label, key=f"sel_{sid}", use_container_width=True):
+                    st.session_state.history_selected_id = sid
+                    st.rerun()
+                st.markdown('</div>', unsafe_allow_html=True)
+
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        # ── Detail panel ──────────────────────────────────────────────────
+        with hist_detail_col:
+            sel_id = st.session_state.history_selected_id
+
+            if sel_id is None:
+                # No song selected yet — prompt user
+                st.markdown("""
+                <div style="height:380px;display:flex;flex-direction:column;align-items:center;
+                            justify-content:center;opacity:0.25;border:2px dashed #c8195a;
+                            border-radius:20px;gap:14px;">
+                    <span style="font-size:3rem;">◀️</span>
+                    <span style="font-family:'Bebas Neue',sans-serif;font-size:1.1rem;
+                                 letter-spacing:4px;color:#c8195a;">
+                        Select a song to view details
+                    </span>
+                </div>
+                """, unsafe_allow_html=True)
+            else:
+                # Load full song document
+                sel_song, sel_err = get_song_by_id(sel_id)
+                if sel_err:
+                    st.error(f"Could not load song: {sel_err}")
+                else:
+                    emo     = sel_song.get("emotion", {})
+                    params  = sel_song.get("music_params", {})
+                    p_emo   = emo.get("primary_emotion", "—")
+                    intens  = int(emo.get("emotion_intensity", 0) * 100)
+                    conf    = int(emo.get("confidence", 0) * 100)
+
+                    st.markdown('<div class="glass-card">', unsafe_allow_html=True)
+
+                    # Header row
+                    hdr_c1, hdr_c2 = st.columns([3, 1])
+                    with hdr_c1:
+                        st.markdown(
+                            f'<div class="section-label">{EMOTION_EMOJI.get(p_emo, "🎵")} {p_emo} &nbsp;·&nbsp; {params.get("genre","—")}</div>',
+                            unsafe_allow_html=True,
+                        )
+                        st.caption(f"📅 {sel_song.get('created_at_str', '')}  ·  ID: {sel_id}")
+                    with hdr_c2:
+                        # Rating widget
+                        current_rating = sel_song.get("rating") or 0
+                        new_rating = st.selectbox(
+                            "★ Rate",
+                            options=[0, 1, 2, 3, 4, 5],
+                            index=current_rating,
+                            format_func=lambda x: "☆ Unrated" if x == 0 else "★" * x,
+                            key=f"rate_{sel_id}",
+                        )
+                        if new_rating != current_rating and new_rating > 0:
+                            ok, rate_err = update_song_rating(sel_id, new_rating)
+                            if rate_err:
+                                st.error(rate_err)
+                            else:
+                                st.rerun()
+
+                    st.markdown('<div class="staff-divider"><div class="staff-line"></div><span class="staff-note">📝</span><div class="staff-line"></div></div>', unsafe_allow_html=True)
+
+                    # Story prompt
+                    story = sel_song.get("story_prompt", "")
+                    if story:
+                        st.markdown(
+                            '<span style="color:#ff6ba8;font-weight:700;font-size:0.85rem;'
+                            'letter-spacing:1px;text-transform:uppercase;">Original Story</span>',
+                            unsafe_allow_html=True,
+                        )
+                        st.markdown(
+                            f'<div style="background:rgba(0,0,0,0.3);border-radius:10px;'
+                            f'padding:10px 14px;font-size:0.9rem;line-height:1.65;'
+                            f'color:#a0aec0;font-style:italic;margin-bottom:10px;">'
+                            f'{story}</div>',
+                            unsafe_allow_html=True,
+                        )
+
+                    # Emotion metrics
+                    em_c1, em_c2, em_c3 = st.columns(3)
+                    em_c1.metric("Emotion",    p_emo)
+                    em_c2.metric("Intensity",  f"{intens}%")
+                    em_c3.metric("Confidence", f"{conf}%")
+
+                    st.markdown('<div class="staff-divider"><div class="staff-line"></div><span class="staff-note">🎶</span><div class="staff-line"></div></div>', unsafe_allow_html=True)
+
+                    # Music params chips
+                    def _chip(label, val):
+                        return (
+                            f'<span style="background:rgba(200,25,90,0.15);'
+                            f'border:1px solid rgba(255,107,168,0.25);'
+                            f'border-radius:20px;padding:3px 12px;font-size:0.82rem;'
+                            f'color:#ff6ba8;margin-right:6px;white-space:nowrap;">'
+                            f'<b>{label}</b> {val}</span>'
+                        )
+                    chips_html = (
+                        _chip("Mood",   params.get("mood",       "—")) +
+                        _chip("Tempo",  params.get("tempo",      "—")) +
+                        _chip("Genre",  params.get("genre",      "—")) +
+                        _chip("Voice",  params.get("voice_type", "—")) +
+                        _chip("Pitch",  params.get("pitch",      "—"))
+                    )
+                    st.markdown(
+                        f'<div style="margin-bottom:14px;flex-wrap:wrap;display:flex;gap:4px;">'
+                        f'{chips_html}</div>',
+                        unsafe_allow_html=True,
+                    )
+
+                    # Full lyrics
+                    st.markdown(
+                        '<span style="color:#ff6ba8;font-weight:700;font-size:0.85rem;'
+                        'letter-spacing:1px;text-transform:uppercase;">Full Lyrics</span>',
+                        unsafe_allow_html=True,
+                    )
+                    st.markdown(
+                        f'<div style="background:rgba(0,0,0,0.35);border:1px solid rgba(255,107,168,0.12);'
+                        f'border-radius:14px;padding:14px 18px;font-size:0.9rem;'
+                        f'line-height:1.8;color:#e2e8f0;white-space:pre-wrap;'
+                        f'max-height:280px;overflow-y:auto;margin-bottom:12px;">'
+                        f'{sel_song.get("lyrics", "")}'
+                        f'</div>',
+                        unsafe_allow_html=True,
+                    )
+
+                    # Audio player
+                    audio_url = sel_song.get("audio_url")
+                    if audio_url:
+                        st.markdown(
+                            '<span style="color:#ff6ba8;font-weight:700;font-size:0.85rem;'
+                            'letter-spacing:1px;text-transform:uppercase;">Audio Track</span>',
+                            unsafe_allow_html=True,
+                        )
+                        st.audio(audio_url, format="audio/mp3")
+                    else:
+                        st.caption("🔇 No audio URL saved for this track.")
+
+                    st.markdown('<div class="staff-divider"><div class="staff-line"></div><span class="staff-note">⚙️</span><div class="staff-line"></div></div>', unsafe_allow_html=True)
+
+                    # Action buttons
+                    act_c1, act_c2, act_c3 = st.columns(3)
+
+                    with act_c1:
+                        if st.button("📋  Load into Studio", key=f"load_{sel_id}", use_container_width=True):
+                            st.session_state.lyrics          = sel_song.get("lyrics", "")
+                            st.session_state["lyrics_editor"]= sel_song.get("lyrics", "")
+                            st.session_state.story_prompt    = sel_song.get("story_prompt", "")
+                            st.session_state.emotion_data    = sel_song.get("emotion", {})
+                            st.session_state.step            = 2
+                            st.session_state.song_url        = sel_song.get("audio_url", "") or ""
+                            st.session_state.last_saved_song_id = sel_id
+                            st.success("✅ Loaded! Switch to the Lyrics Studio tab.")
+
+                    with act_c2:
+                        # Download lyrics as .txt
+                        lyrics_bytes = sel_song.get("lyrics", "").encode("utf-8")
+                        st.download_button(
+                            label="⬇️  Download Lyrics",
+                            data=lyrics_bytes,
+                            file_name=f"{sel_id}_lyrics.txt",
+                            mime="text/plain",
+                            key=f"dl_{sel_id}",
+                            use_container_width=True,
+                        )
+
+                    with act_c3:
+                        if st.button("🗑️  Delete Song", key=f"del_{sel_id}", use_container_width=True):
+                            ok, del_err = delete_song(sel_id)
+                            if ok:
+                                st.session_state.history_selected_id = None
+                                st.success("Song deleted.")
+                                st.rerun()
+                            else:
+                                st.error(f"Delete failed: {del_err}")
+
+                    st.markdown('</div>', unsafe_allow_html=True)

@@ -13,7 +13,11 @@ def generate_music_task(prompt: str, tags: str) -> dict:
     """
     Step 1: Submit the generation task to PiAPI using the Qubico/ace-step model.
     """
-    if not API_KEY or API_KEY == "Paste_Your_Secret_PiAPI_Key_Here" or API_KEY.startswith("http"):
+    load_dotenv(override=True)
+    api_key = os.getenv("MUSIC_API_KEY")
+    api_url = os.getenv("MUSIC_API_URL", "https://api.piapi.ai/api/v1/task")
+
+    if not api_key or api_key == "Paste_Your_Secret_PiAPI_Key_Here" or api_key.startswith("http"):
         return {"status": "error", "message": "Missing or invalid MUSIC_API_KEY in .env. Please just put the secret key string."}
 
     # Payload matching the PiAPI Ace Step documentation
@@ -28,12 +32,12 @@ def generate_music_task(prompt: str, tags: str) -> dict:
     }
     
     headers = {
-        "x-api-key": API_KEY, # PiAPI uses x-api-key header
+        "x-api-key": api_key, # PiAPI uses x-api-key header
         "Content-Type": "application/json"
     }
 
     try:
-        response = requests.post(API_URL, json=payload, headers=headers, timeout=30)
+        response = requests.post(api_url, json=payload, headers=headers, timeout=30)
         
         # Try to parse JSON response regardless of status code
         try:
@@ -44,6 +48,11 @@ def generate_music_task(prompt: str, tags: str) -> dict:
         # Check for HTTP errors
         if response.status_code >= 400:
             error_msg = data.get("message") or data.get("error") or f"HTTP {response.status_code}: {response.text}"
+            if "insufficient credits" in str(error_msg).lower() or "credits" in str(error_msg).lower():
+                return {
+                    "status": "error", 
+                    "message": "PiAPI Account Notice: Your PiAPI key has run out of credits. Please top up your credits or add a new key in your .env file."
+                }
             return {"status": "error", "message": f"API Error: {error_msg}"}
         
         # PiAPI returns "code": 200 and data contains task_id
@@ -64,13 +73,16 @@ def poll_music_task(task_id: str, timeout: int = 300) -> dict:
     """
     Step 2: Poll for the task status until complete or timeout.
     """
-    headers = {"x-api-key": API_KEY}
+    load_dotenv(override=True)
+    api_key = os.getenv("MUSIC_API_KEY")
+    api_url = os.getenv("MUSIC_API_URL", "https://api.piapi.ai/api/v1/task")
+    headers = {"x-api-key": api_key}
     start_time = time.time()
     
     while time.time() - start_time < timeout:
         try:
             # Polling endpoint for PiAPI is typically GET /api/v1/task/{task_id}
-            response = requests.get(f"{API_URL}/{task_id}", headers=headers, timeout=30)
+            response = requests.get(f"{api_url}/{task_id}", headers=headers, timeout=30)
             
             # Try to parse JSON response
             try:
