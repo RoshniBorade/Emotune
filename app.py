@@ -1,5 +1,5 @@
 import streamlit as st
-from utils.llm_api import generate_hindi_lyrics
+from utils.llm_api import generate_hindi_lyrics, refine_hindi_lyrics, detect_emotion
 from utils.music_api import generate_music_task, poll_music_task
 
 st.set_page_config(page_title="EMOTUNE", layout="wide", page_icon="🎵")
@@ -244,7 +244,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ── Session state ─────────────────────────────────────────────────────────
-for k, v in [("step", 1), ("lyrics", ""), ("song_url", ""), ("is_generating_music", False)]:
+for k, v in [("step", 1), ("lyrics", ""), ("song_url", ""), ("is_generating_music", False), ("emotion_data", None)]:
     if k not in st.session_state:
         st.session_state[k] = v
 
@@ -271,9 +271,53 @@ with tab_lyrics:
             if not story_prompt.strip():
                 st.warning("Please enter a story or prompt first!")
             else:
-                with st.spinner("Writing poetic Hindi lyrics…"):
-                    st.session_state.lyrics = generate_hindi_lyrics(story_prompt)
+                with st.spinner("Analyzing emotion & writing poetic Hindi lyrics…"):
+                    emotion_res = detect_emotion(story_prompt)
+                    st.session_state.emotion_data = emotion_res
+                    gen_result = generate_hindi_lyrics(story_prompt, emotion_data=emotion_res)
+                    st.session_state.lyrics = gen_result
+                    st.session_state["lyrics_editor"] = gen_result
                     st.session_state.step = 2
+
+        # Display Detected Emotion UI Card if available
+        if st.session_state.get("emotion_data"):
+            emo = st.session_state.emotion_data
+            p_emotion = emo.get("primary_emotion", "Romantic")
+            intensity = emo.get("emotion_intensity", 0.75)
+            confidence = emo.get("confidence", 0.85)
+
+            EMOJI_MAP = {
+                "Happy": "😊",
+                "Sad": "😢",
+                "Romantic": "❤️",
+                "Angry": "🤬",
+                "Motivational": "🔥",
+                "Nostalgic": "🌧️",
+                "Calm": "🌿",
+                "Excited": "⚡"
+            }
+            emoji = EMOJI_MAP.get(p_emotion, "🎵")
+            pct = int(intensity * 100)
+
+            st.markdown('<div class="staff-divider"><div class="staff-line"></div><span class="staff-note">🧠</span><div class="staff-line"></div></div>', unsafe_allow_html=True)
+            st.markdown(f"""
+            <div style="background:rgba(200,25,90,0.12);border:1px solid rgba(255,107,168,0.25);border-radius:14px;padding:1rem;margin-top:0.8rem;">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+                    <span style="font-weight:700;letter-spacing:1px;font-size:0.95rem;color:#ff6ba8;">
+                        {emoji} Detected Emotion: <span style="color:#fff;">{p_emotion}</span>
+                    </span>
+                    <span style="font-size:0.8rem;color:#a0aec0;background:rgba(0,0,0,0.3);padding:2px 8px;border-radius:10px;">
+                        Confidence: {int(confidence*100)}%
+                    </span>
+                </div>
+                <div style="font-size:0.82rem;color:#cbd5e0;margin-bottom:6px;display:flex;justify-content:space-between;">
+                    <span>Emotion Intensity</span>
+                    <span style="font-weight:700;color:#ff6ba8;">{pct}%</span>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+            st.progress(intensity)
+
         st.markdown('</div>', unsafe_allow_html=True)
 
     with col_right:
@@ -283,12 +327,71 @@ with tab_lyrics:
             if st.session_state.lyrics.startswith("ERROR"):
                 st.error(st.session_state.lyrics)
             else:
-                st.session_state.lyrics = st.text_area(
+                # Apply pending AI refinement update BEFORE widget is instantiated
+                if st.session_state.get("_lyrics_pending"):
+                    st.session_state["lyrics_editor"] = st.session_state["_lyrics_pending"]
+                    st.session_state["_lyrics_pending"] = None
+
+                # Ensure text area editor state is initialized
+                if "lyrics_editor" not in st.session_state:
+                    st.session_state["lyrics_editor"] = st.session_state.lyrics
+
+                edited_lyrics = st.text_area(
                     "Edit your Hindi Lyrics:",
-                    value=st.session_state.lyrics,
-                    height=400,
+                    key="lyrics_editor",
+                    height=340,
                     label_visibility="collapsed",
                 )
+                # Keep lyrics state synced with user's manual edits
+                st.session_state.lyrics = edited_lyrics
+
+                # ── AI Refinement Toolkit Section ──
+                st.markdown('<div class="staff-divider"><div class="staff-line"></div><span class="staff-note">✨</span><div class="staff-line"></div></div>', unsafe_allow_html=True)
+                st.markdown('<div style="font-weight:700;letter-spacing:1px;font-size:0.85rem;color:#ff6ba8;margin-bottom:8px;text-transform:uppercase;">🪄 AI Lyrics Refinement Studio</div>', unsafe_allow_html=True)
+
+                ref_c1, ref_c2, ref_c3 = st.columns(3)
+                with ref_c1:
+                    btn_improve = st.button("✨ Improve Flow", use_container_width=True, help="Enhance vocabulary and poetic cadence")
+                    btn_chorus = st.button("🔄 Rewrite Chorus", use_container_width=True, help="Rewrite Chorus to be catchier")
+                with ref_c2:
+                    btn_emotional = st.button("❤️ More Emotional", use_container_width=True, help="Heighten emotional depth")
+                    btn_add_verse = st.button("➕ Add Verse", use_container_width=True, help="Add a new story-matching verse")
+                with ref_c3:
+                    btn_rhyme = st.button("🎵 Improve Rhyme", use_container_width=True, help="Improve Hindi rhyming scheme (Tukaant)")
+                    btn_shorten = st.button("✂️ Shorten Lyrics", use_container_width=True, help="Condense lyrics into shorter track")
+
+                selected_action = None
+                action_desc = ""
+                if btn_improve:
+                    selected_action = "improve"
+                    action_desc = "Improving poetic flow & vocabulary..."
+                elif btn_emotional:
+                    selected_action = "emotional"
+                    action_desc = "Heightening emotional depth..."
+                elif btn_rhyme:
+                    selected_action = "rhyme"
+                    action_desc = "Optimizing Hindi rhyming scheme..."
+                elif btn_chorus:
+                    selected_action = "chorus"
+                    action_desc = "Rewriting the Chorus..."
+                elif btn_add_verse:
+                    selected_action = "add_verse"
+                    action_desc = "Adding a new verse..."
+                elif btn_shorten:
+                    selected_action = "shorten"
+                    action_desc = "Condensing song lyrics..."
+
+                if selected_action:
+                    with st.spinner(f"🪄 {action_desc}"):
+                        current_text = st.session_state.get("lyrics_editor", st.session_state.lyrics)
+                        refined_out = refine_hindi_lyrics(current_text, selected_action)
+                        if refined_out.startswith("ERROR"):
+                            st.error(refined_out)
+                        else:
+                            st.session_state.lyrics = refined_out
+                            st.session_state["_lyrics_pending"] = refined_out
+                            st.rerun()
+
                 st.markdown('<div class="staff-divider"><div class="staff-line"></div><span class="staff-note">♫</span><div class="staff-line"></div></div>', unsafe_allow_html=True)
                 st.info("✅ Lyrics ready — head to the **Music Renderer** tab to compose your track.")
             st.markdown('</div>', unsafe_allow_html=True)

@@ -4,10 +4,17 @@ An emotion-driven music generation app that creates personalized songs based on 
 
 ## Features
 
-- 🎤 Generate Hindi lyrics based on emotions using Google Gemini AI
-- 🎵 Create music with AI-generated audio matching your selected style
-- 🎨 Beautiful dark-themed UI with animated waveform effects
-- ⚡ Real-time task polling for music generation
+- 🧠 **AI Emotion Detection Engine**: Automatically extracts primary emotion, intensity (0–100%), and confidence ratings from story prompts using Gemini structured JSON analytics.
+- 🎤 **Emotion-Guided Hindi Lyric Generation**: Synthesizes authentic Hindi lyrics in Devanagari script (`[Verse]`, `[Chorus]`, `[Bridge]`, `[Outro]`) dynamically infused with detected emotion and intensity.
+- 🪄 **AI Lyrics Refinement Studio**: Contextual AI editing controls for existing lyrics:
+  - ✨ **Improve Flow**: Elevates poetic vocabulary and cadence
+  - ❤️ **More Emotional**: Heightens sentiment and heart-touching imagery
+  - 🎵 **Improve Rhyme**: Optimizes Hindi rhyming meter (*Tukaant / तुकांत*)
+  - 🔄 **Rewrite Chorus**: Generates catchy, hooky chorus variations
+  - ➕ **Add Verse**: Appends story-consistent new verses
+  - ✂️ **Shorten Lyrics**: Condenses track structure cleanly
+- 🎛️ **AI Music Renderer**: Renders full audio tracks via PiAPI (Qubico/ACE-Step model) matching customized Mood, Tempo, Genre, Voice Type, and Pitch parameters.
+- ⚡ **Multi-Model Resilient Fallback**: Automatic failover (`gemini-2.5-flash` → `gemini-flash-lite-latest`) with instant 429 rate-limit handling and non-blocking state UI rendering.
 
 ## Tech Stack
 
