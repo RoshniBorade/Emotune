@@ -1,210 +1,202 @@
 import os
+import json
 import time
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# We will import the NEW officially supported sdk
+# ── Gemini SDK ─────────────────────────────────────────────────────────────────
 try:
     from google import genai
 except ImportError:
     genai = None
 
-# Configure Gemini
-api_key = os.getenv("GEMINI_API_KEY")
+# ── Configuration ──────────────────────────────────────────────────────────────
+_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-import json
+# Single ordered model list shared by all functions (preferred → last-resort)
+FALLBACK_MODELS = [
+    "gemini-2.5-flash",
+    "gemini-flash-lite-latest",
+    "gemini-flash-latest",
+]
 
-ALLOWED_EMOTIONS = ["Happy", "Sad", "Romantic", "Angry", "Motivational", "Nostalgic", "Calm", "Excited"]
+ALLOWED_EMOTIONS = [
+    "Happy", "Sad", "Romantic", "Angry",
+    "Motivational", "Nostalgic", "Calm", "Excited",
+]
 
-def safe_print(msg: str):
-    """Safely print messages on Windows cp1252 consoles without UnicodeEncodeError."""
+# ── Module-level helpers ───────────────────────────────────────────────────────
+
+def safe_print(msg: str) -> None:
+    """Print safely on Windows cp1252 consoles without UnicodeEncodeError."""
     try:
         print(msg)
     except UnicodeEncodeError:
-        print(msg.encode('ascii', 'ignore').decode('ascii'))
+        print(msg.encode("ascii", "ignore").decode("ascii"))
+
+
+def _get_client():
+    """Return a genai.Client or None if SDK / key unavailable."""
+    if genai is None or not _API_KEY or _API_KEY == "Paste_Your_Real_Gemini_Key_Here":
+        return None
+    return genai.Client(api_key=_API_KEY)
+
+
+def _is_temporary_error(message: str) -> bool:
+    """True for transient API errors worth retrying."""
+    msg = message or ""
+    return (
+        "503" in msg or "429" in msg or "RESOURCE_EXHAUSTED" in msg
+        or "quota" in msg.lower() or "rate" in msg.lower()
+        or "UNAVAILABLE" in msg or "high demand" in msg.lower()
+        or "temporarily" in msg.lower() or "try again later" in msg.lower()
+    )
+
+
+def _is_quota_error(message: str) -> bool:
+    """True specifically for quota / rate-limit errors."""
+    msg = message or ""
+    return "429" in msg or "RESOURCE_EXHAUSTED" in msg or "quota" in msg.lower()
+
+
+def _strip_code_fence(text: str) -> str:
+    """Strip ```json ... ``` or ``` ... ``` fences."""
+    text = text.strip()
+    if text.startswith("```json"):
+        text = text[7:]
+    elif text.startswith("```"):
+        text = text[3:]
+    if text.endswith("```"):
+        text = text[:-3]
+    return text.strip()
+
 
 def detect_emotion(prompt: str, max_retries: int = 2) -> dict:
     """
-    Detects the primary emotion, intensity (0.0 - 1.0), and confidence score from a user story prompt.
-    Returns a structured dictionary:
-    {
-        "primary_emotion": "Sad",
-        "emotion_intensity": 0.85,
-        "confidence": 0.90
-    }
+    Detect primary emotion, intensity (0.0-1.0), and confidence from a story prompt.
+    Returns: {"primary_emotion": str, "emotion_intensity": float, "confidence": float}
+    Falls back to safe defaults on any failure.
     """
     default_result = {
         "primary_emotion": "Romantic",
         "emotion_intensity": 0.75,
-        "confidence": 0.80
+        "confidence": 0.80,
     }
 
     if not prompt or not prompt.strip():
         return default_result
 
-    if not api_key or api_key == "Paste_Your_Real_Gemini_Key_Here" or genai is None:
+    client = _get_client()
+    if client is None:
         return default_result
 
-    detection_system_prompt = (
+    system_prompt = (
         "You are an expert sentiment and emotion analyzer for musical storytelling.\n"
         "Analyze the user's text input and extract:\n"
         "1. 'primary_emotion': Must be EXACTLY ONE of these categories: "
         f"{ALLOWED_EMOTIONS}.\n"
-        "2. 'emotion_intensity': A float between 0.0 and 1.0 representing how strongly the emotion is expressed (e.g. 0.3 for mild, 0.9 for intense).\n"
-        "3. 'confidence': A float between 0.0 and 1.0 representing your confidence in this classification.\n\n"
-        "Respond ONLY with a valid JSON object matching this exact format:\n"
+        "2. 'emotion_intensity': A float 0.0-1.0 representing how strongly the emotion "
+        "is expressed (e.g. 0.3 mild, 0.9 intense).\n"
+        "3. 'confidence': A float 0.0-1.0 representing your classification confidence.\n\n"
+        "Respond ONLY with valid JSON:\n"
         '{"primary_emotion": "Sad", "emotion_intensity": 0.85, "confidence": 0.92}'
     )
+    full_prompt = f"{system_prompt}\n\nUser Input: {prompt}"
 
-    full_prompt = f"{detection_system_prompt}\n\nUser Input: {prompt}"
-
-    fallback_models = [
-        "gemini-2.5-flash",
-        "gemini-flash-lite-latest",
-        "gemini-flash-latest"
-    ]
-
-    for model_name in fallback_models:
+    for model_name in FALLBACK_MODELS:
         for attempt in range(max_retries):
             try:
-                client = genai.Client(api_key=api_key)
                 response = client.models.generate_content(
                     model=model_name,
-                    contents=full_prompt
+                    contents=full_prompt,
                 )
-                text_out = response.text.strip()
-                # Clean code blocks if present
-                if text_out.startswith("```json"):
-                    text_out = text_out[7:]
-                if text_out.startswith("```"):
-                    text_out = text_out[3:]
-                if text_out.endswith("```"):
-                    text_out = text_out[:-3]
-                text_out = text_out.strip()
-
-                parsed = json.loads(text_out)
+                parsed = json.loads(_strip_code_fence(response.text))
                 emotion = parsed.get("primary_emotion", "").strip().capitalize()
                 if emotion not in ALLOWED_EMOTIONS:
-                    # Match case-insensitive
-                    matched = next((e for e in ALLOWED_EMOTIONS if e.lower() == emotion.lower()), "Romantic")
-                    emotion = matched
-                
-                intensity = float(parsed.get("emotion_intensity", 0.75))
-                intensity = max(0.0, min(1.0, intensity))
-                
-                confidence = float(parsed.get("confidence", 0.85))
-                confidence = max(0.0, min(1.0, confidence))
-
+                    emotion = next(
+                        (e for e in ALLOWED_EMOTIONS if e.lower() == emotion.lower()),
+                        "Romantic",
+                    )
+                intensity = max(0.0, min(1.0, float(parsed.get("emotion_intensity", 0.75))))
+                confidence = max(0.0, min(1.0, float(parsed.get("confidence", 0.85))))
                 return {
                     "primary_emotion": emotion,
                     "emotion_intensity": round(intensity, 2),
-                    "confidence": round(confidence, 2)
+                    "confidence": round(confidence, 2),
                 }
-            except Exception as e:
-                error_str = str(e)
-                if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str or "quota" in error_str.lower():
-                    safe_print(f"[WARN] Quota exceeded on {model_name}, switching to next fallback...")
-                    break  # Immediately fall back to next model on quota exhaustion
+            except Exception as exc:
+                err = str(exc)
+                if _is_quota_error(err):
+                    safe_print(f"[WARN] Quota exceeded on {model_name}, trying next model…")
+                    break
                 if attempt < max_retries - 1:
                     time.sleep(1)
-                    continue
-                break
 
     return default_result
 
 
-def generate_hindi_lyrics(prompt: str, emotion_data: dict = None, max_retries: int = 3) -> str:
+def generate_hindi_lyrics(
+    prompt: str,
+    emotion_data: dict = None,
+    max_retries: int = 3,
+) -> str:
     """
-    Generates Hindi lyrics using Gemini with optional emotion and intensity directives.
-    
-    Args:
-        prompt: The user's story input
-        emotion_data: Dictionary with primary_emotion, emotion_intensity, confidence
-        max_retries: Maximum number of retry attempts (default: 3)
-    
-    Returns:
-        Generated Hindi lyrics in Devanagari script or an error message
+    Generate Hindi lyrics (Devanagari) from a story prompt with optional emotion guidance.
+    Returns the lyrics string, or an ERROR: prefixed message on failure.
     """
-    if not api_key or api_key == "Paste_Your_Real_Gemini_Key_Here":
+    if not _API_KEY or _API_KEY == "Paste_Your_Real_Gemini_Key_Here":
         return "ERROR: Gemini API Key is missing or invalid. Please check your .env file."
-        
     if genai is None:
-        return "ERROR: The google-genai package is not installed yet."
+        return "ERROR: The google-genai package is not installed. Run: pip install google-genai"
 
     emotion_instruction = ""
     if emotion_data and isinstance(emotion_data, dict):
         p_emotion = emotion_data.get("primary_emotion", "Romantic")
-        intensity = emotion_data.get("emotion_intensity", 0.75)
-        pct = int(intensity * 100)
+        pct = int(emotion_data.get("emotion_intensity", 0.75) * 100)
         emotion_instruction = (
-            f"\nIMPORTANT EMOTION DIRECTIVE: The primary emotion of this song is '{p_emotion}' "
-            f"with an emotion intensity level of {pct}%. Infuse the Hindi lyrics, poetic imagery, "
-            f"and rhyming rhythm deeply with this exact emotion."
+            f"\nIMPORTANT EMOTION DIRECTIVE: The primary emotion is '{p_emotion}' "
+            f"at {pct}% intensity. Infuse the Hindi lyrics, poetic imagery, and "
+            f"rhyming rhythm deeply with this exact emotion."
         )
 
     system_prompt = (
         "You are an expert, highly creative music lyricist. "
         "Write a beautiful and rhythmic song based on the user's prompt. "
         "The lyrics MUST be written in the Hindi language (using Devanagari script). "
-        "Structure the song clearly with '[Verse 1]', '[Chorus]', '[Verse 2]', '[Bridge]', and '[Outro]'. "
-        "Make sure the lyrics flow well and convey the emotion requested in the prompt."
+        "Structure the song clearly with '[Verse 1]', '[Chorus]', '[Verse 2]', "
+        "'[Bridge]', and '[Outro]'. "
+        "Make sure the lyrics flow well and convey the emotion requested."
         f"{emotion_instruction}"
     )
-    
     full_prompt = f"{system_prompt}\n\nUser Prompt: {prompt}"
-    
-    def is_temporary_error(message: str) -> bool:
-        message = message or ""
-        return (
-            "503" in message or
-            "429" in message or
-            "RESOURCE_EXHAUSTED" in message or
-            "quota" in message.lower() or
-            "rate" in message.lower() or
-            "UNAVAILABLE" in message or
-            "high demand" in message.lower() or
-            "temporarily" in message.lower() or
-            "try again later" in message.lower()
-        )
 
-    fallback_models = [
-        "gemini-2.5-flash",
-        "gemini-flash-lite-latest",
-        "gemini-flash-latest"
-    ]
-
-    for model_name in fallback_models:
+    client = _get_client()
+    for model_name in FALLBACK_MODELS:
         for attempt in range(max_retries):
             try:
-                client = genai.Client(api_key=api_key)
                 response = client.models.generate_content(
                     model=model_name,
-                    contents=full_prompt
+                    contents=full_prompt,
                 )
                 return response.text.strip()
-
-            except Exception as e:
-                error_str = str(e)
-                if not is_temporary_error(error_str):
-                    return f"ERROR generating lyrics via google-genai SDK: {error_str}"
-
-                if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str or "quota" in error_str.lower():
-                    safe_print(f"[WARN] Quota exceeded for {model_name}, switching to next fallback...")
-                    break  # Immediately fall back to next model on quota exhaustion
-
+            except Exception as exc:
+                err = str(exc)
+                if not _is_temporary_error(err):
+                    return f"ERROR generating lyrics: {err}"
+                if _is_quota_error(err):
+                    safe_print(f"[WARN] Quota exceeded for {model_name}, trying next model…")
+                    break
                 if attempt < max_retries - 1:
-                    wait_time = 2 ** attempt
-                    safe_print(f"[RETRY] Temporary API issue with {model_name}. Retrying in {wait_time}s (attempt {attempt + 1}/{max_retries})")
-                    time.sleep(wait_time)
-                    continue
-
-                safe_print(f"[WARN] Model {model_name} unavailable after {max_retries} attempts.")
-                break
+                    wait = 2 ** attempt
+                    safe_print(f"[RETRY] {model_name} — retrying in {wait}s ({attempt+1}/{max_retries})")
+                    time.sleep(wait)
+                else:
+                    safe_print(f"[WARN] {model_name} unavailable after {max_retries} attempts.")
 
     return (
-        "ERROR: Gemini is currently experiencing high demand and all fallback models are unavailable. "
-        "Please try again in a few minutes, or refresh the page and generate again."
+        "ERROR: Gemini is currently experiencing high demand and all fallback models "
+        "are unavailable. Please try again in a few minutes."
     )
 
 
@@ -280,11 +272,11 @@ def refine_hindi_lyrics(lyrics: str, action: str, max_retries: int = 3) -> str:
     if not lyrics or not lyrics.strip():
         return "ERROR: No lyrics provided to refine. Please generate lyrics first!"
 
-    if not api_key or api_key == "Paste_Your_Real_Gemini_Key_Here":
+    if not _API_KEY or _API_KEY == "Paste_Your_Real_Gemini_Key_Here":
         return "ERROR: Gemini API Key is missing or invalid. Please check your .env file."
-        
+
     if genai is None:
-        return "ERROR: The google-genai package is not installed yet."
+        return "ERROR: The google-genai package is not installed. Run: pip install google-genai"
 
     instruction = REFINEMENT_PROMPTS.get(action)
     if not instruction:
@@ -292,78 +284,56 @@ def refine_hindi_lyrics(lyrics: str, action: str, max_retries: int = 3) -> str:
 
     full_prompt = f"{instruction}\n\nCURRENT HINDI LYRICS TO REFINE:\n{lyrics}"
 
-    def is_temporary_error(message: str) -> bool:
-        message = message or ""
-        return (
-            "503" in message or
-            "429" in message or
-            "RESOURCE_EXHAUSTED" in message or
-            "quota" in message.lower() or
-            "rate" in message.lower() or
-            "UNAVAILABLE" in message or
-            "high demand" in message.lower() or
-            "temporarily" in message.lower() or
-            "try again later" in message.lower()
-        )
-
-    fallback_models = [
-        "gemini-2.5-flash",
-        "gemini-flash-lite-latest",
-        "gemini-flash-latest"
-    ]
-
-    for model_name in fallback_models:
+    client = _get_client()
+    for model_name in FALLBACK_MODELS:
         for attempt in range(max_retries):
             try:
-                client = genai.Client(api_key=api_key)
                 response = client.models.generate_content(
                     model=model_name,
-                    contents=full_prompt
+                    contents=full_prompt,
                 )
-                refined_text = response.text.strip()
-                if refined_text:
-                    return refined_text
-                else:
-                    return lyrics
-
-            except Exception as e:
-                error_str = str(e)
-                if not is_temporary_error(error_str):
-                    return f"ERROR refining lyrics via google-genai SDK: {error_str}"
-
-                if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str or "quota" in error_str.lower():
-                    safe_print(f"[WARN] Quota exceeded for {model_name}, switching to next fallback...")
-                    break  # Immediately fall back to next model on quota exhaustion
-
+                refined = response.text.strip()
+                return refined if refined else lyrics
+            except Exception as exc:
+                err = str(exc)
+                if not _is_temporary_error(err):
+                    return f"ERROR refining lyrics: {err}"
+                if _is_quota_error(err):
+                    safe_print(f"[WARN] Quota exceeded for {model_name}, trying next model…")
+                    break
                 if attempt < max_retries - 1:
-                    wait_time = 2 ** attempt
-                    safe_print(f"[RETRY] Temporary API issue with {model_name}. Retrying in {wait_time}s (attempt {attempt + 1}/{max_retries})")
-                    time.sleep(wait_time)
-                    continue
-
-                safe_print(f"[WARN] Model {model_name} unavailable after {max_retries} attempts.")
-                break
+                    wait = 2 ** attempt
+                    safe_print(f"[RETRY] {model_name} — retrying in {wait}s ({attempt+1}/{max_retries})")
+                    time.sleep(wait)
+                else:
+                    safe_print(f"[WARN] {model_name} unavailable after {max_retries} attempts.")
 
     return (
-        "ERROR: Gemini is currently experiencing high demand and all fallback models are unavailable. "
-        "Please try again in a few moments."
+        "ERROR: Gemini is currently experiencing high demand and all fallback models "
+        "are unavailable. Please try again in a few moments."
     )
 
 
-def recommend_music_parameters(emotion_data: dict, story_prompt: str, lyrics: str, max_retries: int = 2) -> dict:
+def recommend_music_parameters(
+    emotion_data: dict,
+    story_prompt: str,
+    lyrics: str,
+    max_retries: int = 2,
+) -> dict:
     """
-    Recommends music parameters based on emotion, story, and lyrics.
-    Returns a dictionary with recommended values for mood, tempo, genre, voice_type, and pitch.
+    Recommend music generation parameters (mood, tempo, genre, voice_type, pitch)
+    based on emotion, story, and lyrics. Returns safe defaults on failure.
     """
     default_result = {
         "mood": "Romantic",
         "tempo": "Medium",
         "genre": "Bollywood",
         "voice_type": "Male",
-        "pitch": "Medium"
+        "pitch": "Medium",
     }
 
-    if not api_key or api_key == "Paste_Your_Real_Gemini_Key_Here" or genai is None:
+    client = _get_client()
+    if client is None:
         return default_result
 
     p_emotion = emotion_data.get("primary_emotion", "Romantic") if emotion_data else "Romantic"
@@ -371,17 +341,16 @@ def recommend_music_parameters(emotion_data: dict, story_prompt: str, lyrics: st
 
     system_prompt = (
         "You are an expert music producer and AI composer.\n"
-        "Recommend the best music generation parameters based on the detected emotion, user's story, and lyrics.\n"
-        "You MUST choose exactly ONE option from each of the following categories:\n"
+        "Recommend the best music generation parameters based on emotion, story, and lyrics.\n"
+        "Choose exactly ONE option from each category:\n"
         "- 'mood': [\"Romantic\", \"Happy\", \"Sad\", \"Angry\", \"Energetic\", \"Chill\"]\n"
         "- 'tempo': [\"Medium\", \"Slow\", \"Fast\"]\n"
         "- 'genre': [\"Bollywood\", \"Pop\", \"Rock\", \"Ghazal\", \"Classical\", \"Hip Hop\"]\n"
         "- 'voice_type': [\"Male\", \"Female\", \"Duet\"]\n"
         "- 'pitch': [\"Medium\", \"Low\", \"High\"]\n\n"
-        "Respond ONLY with a valid JSON object matching this exact format:\n"
+        "Respond ONLY with valid JSON:\n"
         '{"mood": "Sad", "tempo": "Slow", "genre": "Ghazal", "voice_type": "Male", "pitch": "Low"}'
     )
-
     full_prompt = (
         f"{system_prompt}\n\n"
         f"Detected Emotion: {p_emotion}\n"
@@ -390,54 +359,34 @@ def recommend_music_parameters(emotion_data: dict, story_prompt: str, lyrics: st
         f"Lyrics Snippet: {lyrics[:200]}..."
     )
 
-    fallback_models = [
-        "gemini-2.5-flash",
-        "gemini-flash-lite-latest",
-        "gemini-flash-latest"
-    ]
-
-    for model_name in fallback_models:
+    for model_name in FALLBACK_MODELS:
         for attempt in range(max_retries):
             try:
-                client = genai.Client(api_key=api_key)
                 response = client.models.generate_content(
                     model=model_name,
-                    contents=full_prompt
+                    contents=full_prompt,
                 )
-                text_out = response.text.strip()
-                if text_out.startswith("```json"):
-                    text_out = text_out[7:]
-                if text_out.startswith("```"):
-                    text_out = text_out[3:]
-                if text_out.endswith("```"):
-                    text_out = text_out[:-3]
-                text_out = text_out.strip()
+                parsed = json.loads(_strip_code_fence(response.text))
 
-                parsed = json.loads(text_out)
-                
-                def get_valid(key, options, default):
+                def _get_valid(key, options, default):
                     val = parsed.get(key, "").strip().capitalize()
-                    # Handle multi-word cases like "Hip hop" -> "Hip Hop"
-                    if key == "genre" and val.lower() == "hip hop": val = "Hip Hop"
+                    if key == "genre" and val.lower() == "hip hop":
+                        val = "Hip Hop"
                     return val if val in options else default
 
                 return {
-                    "mood": get_valid("mood", ["Romantic", "Happy", "Sad", "Angry", "Energetic", "Chill"], "Romantic"),
-                    "tempo": get_valid("tempo", ["Medium", "Slow", "Fast"], "Medium"),
-                    "genre": get_valid("genre", ["Bollywood", "Pop", "Rock", "Ghazal", "Classical", "Hip Hop"], "Bollywood"),
-                    "voice_type": get_valid("voice_type", ["Male", "Female", "Duet"], "Male"),
-                    "pitch": get_valid("pitch", ["Medium", "Low", "High"], "Medium")
+                    "mood":       _get_valid("mood",       ["Romantic", "Happy", "Sad", "Angry", "Energetic", "Chill"], "Romantic"),
+                    "tempo":      _get_valid("tempo",      ["Medium", "Slow", "Fast"],                                   "Medium"),
+                    "genre":      _get_valid("genre",      ["Bollywood", "Pop", "Rock", "Ghazal", "Classical", "Hip Hop"], "Bollywood"),
+                    "voice_type": _get_valid("voice_type", ["Male", "Female", "Duet"],                                   "Male"),
+                    "pitch":      _get_valid("pitch",      ["Medium", "Low", "High"],                                    "Medium"),
                 }
-
-            except Exception as e:
-                error_str = str(e)
-                if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str or "quota" in error_str.lower():
-                    safe_print(f"[WARN] Quota exceeded on {model_name}, switching to next fallback...")
+            except Exception as exc:
+                err = str(exc)
+                if _is_quota_error(err):
+                    safe_print(f"[WARN] Quota exceeded on {model_name}, trying next model…")
                     break
                 if attempt < max_retries - 1:
                     time.sleep(1)
-                    continue
-                break
 
     return default_result
-

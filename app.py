@@ -247,7 +247,12 @@ st.markdown("""
   <div class="wave-bar"></div>
 </div>
 <h1 class="emotune-title">EMOTUNE</h1>
-<p class="emotune-sub">AI-Powered Hindi Music Studio</p>
+<p class="emotune-sub">AI-Powered Hindi Music Synthesis System</p>
+<div style="text-align:center;margin-top:-1.8rem;margin-bottom:2rem;">
+    <span style="background:rgba(200,25,90,0.15);border:1px solid rgba(255,107,168,0.3);border-radius:20px;padding:5px 18px;font-size:0.78rem;letter-spacing:2px;color:#ff6ba8;text-transform:uppercase;font-weight:700;">
+        🎓 B.Tech Final-Year GenAI Project
+    </span>
+</div>
 """, unsafe_allow_html=True)
 
 # ── Session state ─────────────────────────────────────────────────────────────
@@ -267,7 +272,31 @@ for k, v in [
     if k not in st.session_state:
         st.session_state[k] = v
 
-# ── Pages via tabs ────────────────────────────────────────────────────────
+# ── Module-level helpers ───────────────────────────────────────────────────────
+EMOTION_EMOJI = {
+    "Happy": "😊", "Sad": "😢", "Romantic": "❤️",
+    "Angry": "🤬", "Motivational": "🔥", "Nostalgic": "🌧️",
+    "Calm": "🌿", "Excited": "⚡",
+}
+
+def _get_idx(options: list, val: str) -> int:
+    """Return the index of val in options, or 0 if not found."""
+    try:
+        return options.index(val)
+    except ValueError:
+        return 0
+
+def _render_chip(label: str, val: str) -> str:
+    """Return an HTML chip span for a music parameter."""
+    return (
+        f'<span style="background:rgba(200,25,90,0.15);'
+        f'border:1px solid rgba(255,107,168,0.25);'
+        f'border-radius:20px;padding:3px 12px;font-size:0.82rem;'
+        f'color:#ff6ba8;margin-right:6px;white-space:nowrap;">'
+        f'<b>{label}</b> {val}</span>'
+    )
+
+# ── Pages via tabs ─────────────────────────────────────────────────────────────
 tab_lyrics, tab_music, tab_history, tab_eval = st.tabs(["♪  Lyrics Studio", "🎛  Music Renderer", "📚  Song History", "📊  Evaluation Analytics"])
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -308,17 +337,7 @@ with tab_lyrics:
             intensity = emo.get("emotion_intensity", 0.75)
             confidence = emo.get("confidence", 0.85)
 
-            EMOJI_MAP = {
-                "Happy": "😊",
-                "Sad": "😢",
-                "Romantic": "❤️",
-                "Angry": "🤬",
-                "Motivational": "🔥",
-                "Nostalgic": "🌧️",
-                "Calm": "🌿",
-                "Excited": "⚡"
-            }
-            emoji = EMOJI_MAP.get(p_emotion, "🎵")
+            emoji = EMOTION_EMOJI.get(p_emotion, "🎵")
             pct = int(intensity * 100)
 
             st.markdown('<div class="staff-divider"><div class="staff-line"></div><span class="staff-note">🧠</span><div class="staff-line"></div></div>', unsafe_allow_html=True)
@@ -490,17 +509,11 @@ with tab_music:
                 # If they accepted recommendations, set the default index to the recommended value
                 # If not, let them start with defaults or previously set values
                 
-                def get_idx(options, val):
-                    try:
-                        return options.index(val)
-                    except ValueError:
-                        return 0
-
-                idx_mood = get_idx(mood_options, rec_params["mood"]) if st.session_state.recommendation_accepted else 0
-                idx_tempo = get_idx(tempo_options, rec_params["tempo"]) if st.session_state.recommendation_accepted else 0
-                idx_voice = get_idx(voice_options, rec_params["voice_type"]) if st.session_state.recommendation_accepted else 0
-                idx_pitch = get_idx(pitch_options, rec_params["pitch"]) if st.session_state.recommendation_accepted else 0
-                idx_genre = get_idx(genre_options, rec_params["genre"]) if st.session_state.recommendation_accepted else 0
+                idx_mood  = _get_idx(mood_options,  rec_params["mood"])  if st.session_state.recommendation_accepted else 0
+                idx_tempo = _get_idx(tempo_options, rec_params["tempo"]) if st.session_state.recommendation_accepted else 0
+                idx_voice = _get_idx(voice_options, rec_params["voice_type"]) if st.session_state.recommendation_accepted else 0
+                idx_pitch = _get_idx(pitch_options, rec_params["pitch"]) if st.session_state.recommendation_accepted else 0
+                idx_genre = _get_idx(genre_options, rec_params["genre"]) if st.session_state.recommendation_accepted else 0
 
                 p1, p2 = st.columns(2)
                 with p1:
@@ -676,11 +689,7 @@ with tab_history:
             st.caption(f"{len(songs)} track{'s' if len(songs) != 1 else ''} saved")
             st.markdown('<div class="staff-divider"><div class="staff-line"></div><span class="staff-note">♪</span><div class="staff-line"></div></div>', unsafe_allow_html=True)
 
-            EMOTION_EMOJI = {
-                "Happy": "😊", "Sad": "😢", "Romantic": "❤️",
-                "Angry": "🤬", "Motivational": "🔥", "Nostalgic": "🌧️",
-                "Calm": "🌿", "Excited": "⚡",
-            }
+
 
             for song in songs:
                 sid          = song["song_id"]
@@ -792,20 +801,12 @@ with tab_history:
                     st.markdown('<div class="staff-divider"><div class="staff-line"></div><span class="staff-note">🎶</span><div class="staff-line"></div></div>', unsafe_allow_html=True)
 
                     # Music params chips
-                    def _chip(label, val):
-                        return (
-                            f'<span style="background:rgba(200,25,90,0.15);'
-                            f'border:1px solid rgba(255,107,168,0.25);'
-                            f'border-radius:20px;padding:3px 12px;font-size:0.82rem;'
-                            f'color:#ff6ba8;margin-right:6px;white-space:nowrap;">'
-                            f'<b>{label}</b> {val}</span>'
-                        )
                     chips_html = (
-                        _chip("Mood",   params.get("mood",       "—")) +
-                        _chip("Tempo",  params.get("tempo",      "—")) +
-                        _chip("Genre",  params.get("genre",      "—")) +
-                        _chip("Voice",  params.get("voice_type", "—")) +
-                        _chip("Pitch",  params.get("pitch",      "—"))
+                        _render_chip("Mood",   params.get("mood",       "—")) +
+                        _render_chip("Tempo",  params.get("tempo",      "—")) +
+                        _render_chip("Genre",  params.get("genre",      "—")) +
+                        _render_chip("Voice",  params.get("voice_type", "—")) +
+                        _render_chip("Pitch",  params.get("pitch",      "—"))
                     )
                     st.markdown(
                         f'<div style="margin-bottom:14px;flex-wrap:wrap;display:flex;gap:4px;">'

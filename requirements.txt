@@ -1,6 +1,7 @@
 streamlit==1.33.0
-google-generativeai==0.5.2
+google-genai>=1.0.0
 requests==2.31.0
 python-dotenv==1.0.1
 pymongo==4.7.2
 dnspython==2.6.1
+certifi>=2024.1.1

@@ -5,121 +5,109 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Music API Key from PiAPI (Workspace -> API Keys)
-API_KEY = os.getenv("MUSIC_API_KEY")
-API_URL = os.getenv("MUSIC_API_URL", "https://api.piapi.ai/api/v1/task") 
+# ── Configuration (read once at import time) ───────────────────────────────────
+API_KEY = os.getenv("MUSIC_API_KEY", "")
+API_URL = os.getenv("MUSIC_API_URL", "https://api.piapi.ai/api/v1/task")
+
 
 def generate_music_task(prompt: str, tags: str) -> dict:
     """
-    Step 1: Submit the generation task to PiAPI using the Qubico/ace-step model.
+    Step 1: Submit a music generation task to PiAPI (Qubico/ace-step model).
+    Returns {"status": "success", "task_id": str} or {"status": "error", "message": str}.
     """
-    load_dotenv(override=True)
-    api_key = os.getenv("MUSIC_API_KEY")
-    api_url = os.getenv("MUSIC_API_URL", "https://api.piapi.ai/api/v1/task")
+    if not API_KEY or API_KEY == "Paste_Your_Secret_PiAPI_Key_Here" or API_KEY.startswith("http"):
+        return {
+            "status": "error",
+            "message": "Missing or invalid MUSIC_API_KEY in .env. Please set the secret key string.",
+        }
 
-    if not api_key or api_key == "Paste_Your_Secret_PiAPI_Key_Here" or api_key.startswith("http"):
-        return {"status": "error", "message": "Missing or invalid MUSIC_API_KEY in .env. Please just put the secret key string."}
-
-    # Payload matching the PiAPI Ace Step documentation
     payload = {
         "model": "Qubico/ace-step",
         "task_type": "txt2audio",
         "input": {
-            "style_prompt": tags, # User selected styles
-            "lyrics": prompt,     # Generated Hindi lyrics
-            "duration": 60        # Generating ~1 minute
-        }
+            "style_prompt": tags,   # user-selected styles
+            "lyrics": prompt,        # generated Hindi lyrics
+            "duration": 60,          # ~1 minute track
+        },
     }
-    
     headers = {
-        "x-api-key": api_key, # PiAPI uses x-api-key header
-        "Content-Type": "application/json"
+        "x-api-key": API_KEY,
+        "Content-Type": "application/json",
     }
 
     try:
-        response = requests.post(api_url, json=payload, headers=headers, timeout=30)
-        
-        # Try to parse JSON response regardless of status code
+        response = requests.post(API_URL, json=payload, headers=headers, timeout=30)
+
         try:
             data = response.json()
-        except:
+        except Exception:
             data = {"error": response.text}
-        
-        # Check for HTTP errors
+
         if response.status_code >= 400:
-            error_msg = data.get("message") or data.get("error") or f"HTTP {response.status_code}: {response.text}"
-            if "insufficient credits" in str(error_msg).lower() or "credits" in str(error_msg).lower():
+            error_msg = data.get("message") or data.get("error") or f"HTTP {response.status_code}"
+            if "credits" in str(error_msg).lower():
                 return {
-                    "status": "error", 
-                    "message": "PiAPI Account Notice: Your PiAPI key has run out of credits. Please top up your credits or add a new key in your .env file."
+                    "status": "error",
+                    "message": "PiAPI account has run out of credits. Please top up at piapi.ai.",
                 }
             return {"status": "error", "message": f"API Error: {error_msg}"}
-        
-        # PiAPI returns "code": 200 and data contains task_id
+
         if data.get("code") == 200 and data.get("data"):
-            task_id = data["data"]["task_id"]
-            return {"status": "success", "task_id": task_id}
-        else:
-             return {"status": "error", "message": data.get("message", "Unknown error submitting task")}
-             
+            return {"status": "success", "task_id": data["data"]["task_id"]}
+
+        return {"status": "error", "message": data.get("message", "Unknown error submitting task")}
+
     except requests.exceptions.Timeout:
-        return {"status": "error", "message": "Request timeout: The API took too long to respond. Please try again."}
+        return {"status": "error", "message": "Request timed out. Please try again."}
     except requests.exceptions.ConnectionError:
-        return {"status": "error", "message": "Connection error: Unable to reach the music API. Please check your internet connection."}
-    except Exception as e:
-        return {"status": "error", "message": f"Unexpected error: {str(e)}"}
+        return {"status": "error", "message": "Connection error: unable to reach PiAPI. Check your internet."}
+    except Exception as exc:
+        return {"status": "error", "message": f"Unexpected error: {exc}"}
+
 
 def poll_music_task(task_id: str, timeout: int = 300) -> dict:
     """
-    Step 2: Poll for the task status until complete or timeout.
+    Step 2: Poll PiAPI until the task completes or timeout expires.
+    Returns {"status": "success", "audio_url": str} or {"status": "error", "message": str}.
     """
-    load_dotenv(override=True)
-    api_key = os.getenv("MUSIC_API_KEY")
-    api_url = os.getenv("MUSIC_API_URL", "https://api.piapi.ai/api/v1/task")
-    headers = {"x-api-key": api_key}
+    headers = {"x-api-key": API_KEY}
     start_time = time.time()
-    
+
     while time.time() - start_time < timeout:
         try:
-            # Polling endpoint for PiAPI is typically GET /api/v1/task/{task_id}
-            response = requests.get(f"{api_url}/{task_id}", headers=headers, timeout=30)
-            
-            # Try to parse JSON response
+            response = requests.get(f"{API_URL}/{task_id}", headers=headers, timeout=30)
+
             try:
                 data = response.json()
-            except:
+            except Exception:
                 data = {"error": response.text}
-            
-            # Check for HTTP errors
+
             if response.status_code >= 400:
                 error_msg = data.get("message") or data.get("error") or f"HTTP {response.status_code}"
                 return {"status": "error", "message": f"Polling failed: {error_msg}"}
-            
+
             if data.get("code") == 200:
                 task_status = data["data"]["status"]
-                
+
                 if task_status == "completed":
-                    # For PiAPI Ace-step, the output audio URL is usually in data.output.audio_url
-                    output_data = data["data"].get("output", {})
-                    audio_url = output_data.get("audio_url")
-                    
+                    audio_url = data["data"].get("output", {}).get("audio_url")
                     if audio_url:
                         return {"status": "success", "audio_url": audio_url}
-                    else:
-                        return {"status": "error", "message": "Task completed but no audio URL found."}
-                    
-                elif task_status == "failed":
-                     error_detail = data["data"].get("error", "Unknown error")
-                     return {"status": "error", "message": f"Task failed: {error_detail}"}
-            
-            # If "pending" or "processing", wait and try again
+                    return {"status": "error", "message": "Task completed but no audio URL found."}
+
+                if task_status == "failed":
+                    error_detail = data["data"].get("error", "Unknown error")
+                    return {"status": "error", "message": f"Task failed: {error_detail}"}
+
+            # "pending" or "processing" — wait and retry
             time.sleep(5)
-            
+
         except requests.exceptions.Timeout:
-            return {"status": "error", "message": "Polling timeout: The API took too long to respond."}
+            return {"status": "error", "message": "Polling timed out. Please try again."}
         except requests.exceptions.ConnectionError:
             return {"status": "error", "message": "Connection error during polling. Please try again."}
-        except Exception as e:
-            return {"status": "error", "message": f"Polling error: {str(e)}"}
-            
+        except Exception as exc:
+            return {"status": "error", "message": f"Polling error: {exc}"}
+
     return {"status": "error", "message": "Polling timed out after 5 minutes. Your task may still be processing."}
+
