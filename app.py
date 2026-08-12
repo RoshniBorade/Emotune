@@ -248,11 +248,6 @@ st.markdown("""
 </div>
 <h1 class="emotune-title">EMOTUNE</h1>
 <p class="emotune-sub">AI-Powered Hindi Music Synthesis System</p>
-<div style="text-align:center;margin-top:-1.8rem;margin-bottom:2rem;">
-    <span style="background:rgba(200,25,90,0.15);border:1px solid rgba(255,107,168,0.3);border-radius:20px;padding:5px 18px;font-size:0.78rem;letter-spacing:2px;color:#ff6ba8;text-transform:uppercase;font-weight:700;">
-        🎓 B.Tech Final-Year GenAI Project
-    </span>
-</div>
 """, unsafe_allow_html=True)
 
 # ── Session state ─────────────────────────────────────────────────────────────
