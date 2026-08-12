@@ -818,13 +818,14 @@ with tab_history:
                     with act_c1:
                         if st.button("📋  Load into Studio", key=f"load_{sel_id}", use_container_width=True):
                             st.session_state.lyrics          = sel_song.get("lyrics", "")
-                            st.session_state["lyrics_editor"]= sel_song.get("lyrics", "")
+                            st.session_state["_lyrics_pending"] = sel_song.get("lyrics", "")
                             st.session_state.story_prompt    = sel_song.get("story_prompt", "")
                             st.session_state.emotion_data    = sel_song.get("emotion", {})
                             st.session_state.step            = 2
                             st.session_state.song_url        = sel_song.get("audio_url", "") or ""
                             st.session_state.last_saved_song_id = sel_id
                             st.success("✅ Loaded! Switch to the Lyrics Studio tab.")
+                            st.rerun()
 
                     with act_c2:
                         # Download lyrics as .txt
