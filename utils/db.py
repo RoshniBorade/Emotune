@@ -99,14 +99,18 @@ def _get_db():
         )
 
     try:
-        # Try connecting with certifi CA bundle if available
+        # Try standard connection, certifi, or tlsAllowInvalidCertificates fallback
         try:
-            import certifi
-            _client = MongoClient(uri, serverSelectionTimeoutMS=5_000, tlsCAFile=certifi.where())
+            _client = MongoClient(uri, serverSelectionTimeoutMS=5_000)
             _client.admin.command("ping")
         except Exception:
-            _client = MongoClient(uri, serverSelectionTimeoutMS=5_000)
-            _client.admin.command("ping")          # verify connection
+            try:
+                import certifi
+                _client = MongoClient(uri, serverSelectionTimeoutMS=5_000, tlsCAFile=certifi.where())
+                _client.admin.command("ping")
+            except Exception:
+                _client = MongoClient(uri, serverSelectionTimeoutMS=5_000, tlsAllowInvalidCertificates=True)
+                _client.admin.command("ping")
 
         _db = _client[db_name]
 
