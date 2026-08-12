@@ -1,9 +1,11 @@
+import pandas as pd
 import streamlit as st
 from utils.llm_api import generate_hindi_lyrics, refine_hindi_lyrics, detect_emotion, recommend_music_parameters
 from utils.music_api import generate_music_task, poll_music_task
 from utils.db import (
     save_song, get_recent_songs, get_song_by_id,
     delete_song, update_song_rating,
+    save_evaluation, get_all_evaluations, get_evaluation_stats,
     is_db_connected, get_connection_error,
 )
 
@@ -266,7 +268,7 @@ for k, v in [
         st.session_state[k] = v
 
 # ── Pages via tabs ────────────────────────────────────────────────────────
-tab_lyrics, tab_music, tab_history = st.tabs(["♪  Lyrics Studio", "🎛  Music Renderer", "📚  Song History"])
+tab_lyrics, tab_music, tab_history, tab_eval = st.tabs(["♪  Lyrics Studio", "🎛  Music Renderer", "📚  Song History", "📊  Evaluation Analytics"])
 
 # ════════════════════════════════════════════════════════════════════════════
 # PAGE 1 — LYRICS STUDIO
@@ -562,6 +564,35 @@ with tab_music:
                 # ── Explicit Save button (only shown after successful render) ──
                 if st.session_state.last_saved_song_id:
                     st.success(f"✅ Saved to library as **{st.session_state.last_saved_song_id}** — visit the 📚 Song History tab to view it.")
+
+                    # ── Feature 5: Track Evaluation Form ──
+                    st.markdown('<div class="staff-divider"><div class="staff-line"></div><span class="staff-note">⭐</span><div class="staff-line"></div></div>', unsafe_allow_html=True)
+                    st.markdown('<div style="font-weight:700;letter-spacing:1px;font-size:0.95rem;color:#ff6ba8;margin-bottom:6px;">📊 Track Evaluation & Feedback</div>', unsafe_allow_html=True)
+                    st.caption("Rate this track across 4 dimensions to save human evaluation stats.")
+
+                    eval_c1, eval_c2 = st.columns(2)
+                    with eval_c1:
+                        rate_emo = st.selectbox("1. Emotion-Lyrics Alignment", options=[5, 4, 3, 2, 1], format_func=lambda x: f"{'★'*x} ({x}/5)", key="eval_emo")
+                        rate_lyr = st.selectbox("2. Hindi Lyrics Quality", options=[5, 4, 3, 2, 1], format_func=lambda x: f"{'★'*x} ({x}/5)", key="eval_lyr")
+                    with eval_c2:
+                        rate_mus = st.selectbox("3. Music Quality", options=[5, 4, 3, 2, 1], format_func=lambda x: f"{'★'*x} ({x}/5)", key="eval_mus")
+                        rate_sat = st.selectbox("4. Overall Satisfaction", options=[5, 4, 3, 2, 1], format_func=lambda x: f"{'★'*x} ({x}/5)", key="eval_sat")
+
+                    eval_notes = st.text_input("Optional Feedback / Notes:", placeholder="E.g. Vocals match emotion well, composition is catchy", key="eval_notes")
+
+                    if st.button("⭐  Submit Track Evaluation", use_container_width=True):
+                        ok_eval, err_eval = save_evaluation(
+                            song_id=st.session_state.last_saved_song_id,
+                            emotion_alignment=rate_emo,
+                            lyric_quality=rate_lyr,
+                            music_quality=rate_mus,
+                            overall_satisfaction=rate_sat,
+                            feedback_text=eval_notes,
+                        )
+                        if ok_eval:
+                            st.success("🎉 Evaluation saved successfully! Check the 📊 Evaluation Analytics tab to view aggregated metrics.")
+                        else:
+                            st.error(f"Could not save evaluation: {err_eval}")
                 else:
                     if st.button("💾  Save to Song Library", use_container_width=True):
                         rp = st.session_state.get("_rendered_params", {})
@@ -850,3 +881,112 @@ with tab_history:
                                 st.error(f"Delete failed: {del_err}")
 
                     st.markdown('</div>', unsafe_allow_html=True)
+
+# ════════════════════════════════════════════════════════════════════════════
+# PAGE 4 — EVALUATION & ANALYTICS DASHBOARD
+# ════════════════════════════════════════════════════════════════════════════
+with tab_eval:
+    st.markdown('<div class="glass-card">', unsafe_allow_html=True)
+    st.markdown('<div class="section-label">📊 Evaluation & Performance Analytics</div>', unsafe_allow_html=True)
+    st.caption("Quantitative analytics and empirical human evaluation results computed directly from database records.")
+
+    if not is_db_connected():
+        st.warning(f"🔴 MongoDB not connected — {get_connection_error()}")
+        st.stop()
+
+    stats, stats_err = get_evaluation_stats()
+    eval_songs, songs_err = get_all_evaluations()
+
+    if stats_err or songs_err:
+        st.error(f"Could not load evaluation statistics: {stats_err or songs_err}")
+        st.stop()
+
+    if stats.get("total_evaluated", 0) == 0:
+        st.markdown("""
+        <div style="height:300px;display:flex;flex-direction:column;align-items:center;
+                    justify-content:center;gap:14px;opacity:0.4;">
+            <span style="font-size:3.5rem;">📊</span>
+            <span style="font-family:'Bebas Neue',sans-serif;font-size:1.3rem;
+                         letter-spacing:4px;color:#ff6ba8;">
+                No Evaluated Songs Yet
+            </span>
+            <span style="font-size:0.9rem;color:#a0aec0;">
+                Render a song in the Music Renderer tab and submit your evaluation to see live metrics here.
+            </span>
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        # Top KPI metric cards
+        m1, m2, m3, m4, m5 = st.columns(5)
+        m1.metric("Total Evaluated Tracks", f"{stats['total_evaluated']}")
+        m2.metric("Overall Satisfaction", f"{stats['avg_overall_satisfaction']} / 5.0")
+        m3.metric("Emotion Alignment", f"{stats['avg_emotion_alignment']} / 5.0")
+        m4.metric("Lyrics Quality", f"{stats['avg_lyric_quality']} / 5.0")
+        m5.metric("Music Quality", f"{stats['avg_music_quality']} / 5.0")
+
+        st.markdown('<div class="staff-divider"><div class="staff-line"></div><span class="staff-note">📈</span><div class="staff-line"></div></div>', unsafe_allow_html=True)
+
+        # Charts Section
+        c_left, c_right = st.columns(2, gap="large")
+
+        with c_left:
+            st.markdown("### 📊 Dimension Averages")
+            dim_df = pd.DataFrame({
+                "Dimension": ["Emotion Alignment", "Lyrics Quality", "Music Quality", "Overall Satisfaction"],
+                "Average Score (1-5)": [
+                    stats["avg_emotion_alignment"],
+                    stats["avg_lyric_quality"],
+                    stats["avg_music_quality"],
+                    stats["avg_overall_satisfaction"]
+                ]
+            }).set_index("Dimension")
+            st.bar_chart(dim_df, color="#ff6ba8")
+
+        with c_right:
+            st.markdown("### ⭐ Rating Distribution (Overall Satisfaction)")
+            counts = stats.get("rating_counts", {})
+            dist_df = pd.DataFrame({
+                "Star Rating": ["1 Star", "2 Stars", "3 Stars", "4 Stars", "5 Stars"],
+                "Count": [counts.get(1, 0), counts.get(2, 0), counts.get(3, 0), counts.get(4, 0), counts.get(5, 0)]
+            }).set_index("Star Rating")
+            st.bar_chart(dist_df, color="#7b1e8a")
+
+        # Emotion Breakdown Section if available
+        emo_stats = stats.get("emotion_stats", {})
+        if emo_stats:
+            st.markdown('<div class="staff-divider"><div class="staff-line"></div><span class="staff-note">🎭</span><div class="staff-line"></div></div>', unsafe_allow_html=True)
+            st.markdown("### 🎭 Performance by Primary Emotion")
+            emo_rows = []
+            for emo_name, e_data in emo_stats.items():
+                emo_rows.append({
+                    "Primary Emotion": emo_name,
+                    "Tracks Evaluated": e_data["count"],
+                    "Avg Emotion Alignment": e_data["avg_alignment"],
+                    "Avg Overall Satisfaction": e_data["avg_satisfaction"]
+                })
+            emo_df = pd.DataFrame(emo_rows).set_index("Primary Emotion")
+            st.dataframe(emo_df, use_container_width=True)
+
+        st.markdown('<div class="staff-divider"><div class="staff-line"></div><span class="staff-note">📋</span><div class="staff-line"></div></div>', unsafe_allow_html=True)
+        st.markdown("### 📝 Detailed Human Evaluation Records")
+        st.caption("Transparent evaluation log stored per track in MongoDB.")
+
+        table_rows = []
+        for song in eval_songs:
+            e = song.get("evaluation", {})
+            emo = song.get("emotion", {})
+            table_rows.append({
+                "Song ID": song.get("song_id"),
+                "Primary Emotion": emo.get("primary_emotion", "—"),
+                "Emotion Alignment": f"{e.get('emotion_alignment', '—')}/5",
+                "Lyrics Quality": f"{e.get('lyric_quality', '—')}/5",
+                "Music Quality": f"{e.get('music_quality', '—')}/5",
+                "Overall Satisfaction": f"{e.get('overall_satisfaction', '—')}/5",
+                "User Feedback Notes": e.get("feedback_text", "") or "—",
+                "Evaluated Date": song.get("created_at_str", "")[:11] if "created_at_str" in song else "—"
+            })
+
+        df_logs = pd.DataFrame(table_rows)
+        st.dataframe(df_logs, use_container_width=True)
+
+    st.markdown('</div>', unsafe_allow_html=True)

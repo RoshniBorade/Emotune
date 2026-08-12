@@ -99,8 +99,15 @@ def _get_db():
         )
 
     try:
-        _client = MongoClient(uri, serverSelectionTimeoutMS=5_000)
-        _client.admin.command("ping")          # verify connection
+        # Try connecting with certifi CA bundle if available
+        try:
+            import certifi
+            _client = MongoClient(uri, serverSelectionTimeoutMS=5_000, tlsCAFile=certifi.where())
+            _client.admin.command("ping")
+        except Exception:
+            _client = MongoClient(uri, serverSelectionTimeoutMS=5_000)
+            _client.admin.command("ping")          # verify connection
+
         _db = _client[db_name]
 
         # Ensure useful indexes exist (idempotent)
@@ -111,6 +118,17 @@ def _get_db():
 
     except (ConnectionFailure, ServerSelectionTimeoutError) as exc:
         _client = _db = None
+        err_str = str(exc)
+        if "TLSV1_ALERT_INTERNAL_ERROR" in err_str or "SSL handshake failed" in err_str:
+            return None, (
+                "MongoDB Atlas IP Whitelist Error: Your current IP address is not whitelisted in MongoDB Atlas.\n\n"
+                "How to fix:\n"
+                "1. Go to https://cloud.mongodb.com and log in.\n"
+                "2. In the left menu under 'Security', click 'Network Access'.\n"
+                "3. Click '+ Add IP Address'.\n"
+                "4. Click 'Allow Access from Anywhere' (0.0.0.0/0) or 'Add Current IP Address'.\n"
+                "5. Click 'Confirm' and wait 1 minute for rule changes to take effect."
+            )
         return None, f"MongoDB connection failed: {exc}"
     except Exception as exc:
         _client = _db = None
@@ -280,3 +298,144 @@ def get_song_by_id(song_id: str) -> tuple[dict | None, str | None]:
         return _doc_to_dict(doc), None
     except Exception as exc:
         return None, f"Failed to fetch song: {exc}"
+
+
+# ── Feature 5: Evaluation Operations ───────────────────────────────────────
+
+def save_evaluation(
+    song_id: str,
+    emotion_alignment: int,
+    lyric_quality: int,
+    music_quality: int,
+    overall_satisfaction: int,
+    feedback_text: str = "",
+) -> tuple[bool, str | None]:
+    """
+    Save or update human/user evaluation metrics for a song.
+    """
+    for val, name in [
+        (emotion_alignment, "Emotion-Lyrics Alignment"),
+        (lyric_quality, "Hindi Lyrics Quality"),
+        (music_quality, "Music Quality"),
+        (overall_satisfaction, "Overall Satisfaction"),
+    ]:
+        if val not in range(1, 6):
+            return False, f"{name} rating must be between 1 and 5."
+
+    db, err = _get_db()
+    if db is None:
+        return False, err
+
+    eval_doc = {
+        "emotion_alignment": emotion_alignment,
+        "lyric_quality": lyric_quality,
+        "music_quality": music_quality,
+        "overall_satisfaction": overall_satisfaction,
+        "feedback_text": feedback_text.strip(),
+        "evaluated_at": datetime.now(timezone.utc),
+        "is_human_rating": True,
+    }
+
+    try:
+        result = db["songs"].update_one(
+            {"song_id": song_id},
+            {
+                "$set": {
+                    "evaluation": eval_doc,
+                    "rating": overall_satisfaction,
+                }
+            },
+        )
+        if result.matched_count == 0:
+            return False, f"No song found with id '{song_id}'."
+        return True, None
+    except Exception as exc:
+        return False, f"Failed to save evaluation: {exc}"
+
+
+def get_all_evaluations() -> tuple[list[dict], str | None]:
+    """
+    Fetch all songs that have evaluation data populated.
+    """
+    db, err = _get_db()
+    if db is None:
+        return [], err
+
+    try:
+        cursor = db["songs"].find(
+            {"evaluation": {"$ne": None}},
+            sort=[("evaluation.evaluated_at", DESCENDING)]
+        )
+        return [_doc_to_dict(doc) for doc in cursor], None
+    except Exception as exc:
+        return [], f"Failed to fetch evaluations: {exc}"
+
+
+def get_evaluation_stats() -> tuple[dict, str | None]:
+    """
+    Calculate aggregate evaluation metrics across all evaluated songs.
+    Returns transparent statistics computed from actual MongoDB documents.
+    """
+    evals, err = get_all_evaluations()
+    if err:
+        return {}, err
+
+    total_count = len(evals)
+    if total_count == 0:
+        return {
+            "total_evaluated": 0,
+            "avg_emotion_alignment": 0.0,
+            "avg_lyric_quality": 0.0,
+            "avg_music_quality": 0.0,
+            "avg_overall_satisfaction": 0.0,
+            "overall_avg": 0.0,
+            "rating_counts": {1: 0, 2: 0, 3: 0, 4: 0, 5: 0},
+            "emotion_stats": {},
+        }, None
+
+    sum_emo = sum(e["evaluation"]["emotion_alignment"] for e in evals if "evaluation" in e and "emotion_alignment" in e["evaluation"])
+    sum_lyr = sum(e["evaluation"]["lyric_quality"] for e in evals if "evaluation" in e and "lyric_quality" in e["evaluation"])
+    sum_mus = sum(e["evaluation"]["music_quality"] for e in evals if "evaluation" in e and "music_quality" in e["evaluation"])
+    sum_sat = sum(e["evaluation"]["overall_satisfaction"] for e in evals if "evaluation" in e and "overall_satisfaction" in e["evaluation"])
+
+    avg_emo = round(sum_emo / total_count, 2)
+    avg_lyr = round(sum_lyr / total_count, 2)
+    avg_mus = round(sum_mus / total_count, 2)
+    avg_sat = round(sum_sat / total_count, 2)
+    overall_avg = round((avg_emo + avg_lyr + avg_mus + avg_sat) / 4.0, 2)
+
+    rating_counts = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
+    for e in evals:
+        sat = e.get("evaluation", {}).get("overall_satisfaction")
+        if sat in rating_counts:
+            rating_counts[sat] += 1
+
+    emo_dict = {}
+    for e in evals:
+        p_emo = e.get("emotion", {}).get("primary_emotion", "Romantic")
+        if p_emo not in emo_dict:
+            emo_dict[p_emo] = {"count": 0, "sum_sat": 0, "sum_alignment": 0}
+        emo_dict[p_emo]["count"] += 1
+        emo_dict[p_emo]["sum_sat"] += e.get("evaluation", {}).get("overall_satisfaction", 0)
+        emo_dict[p_emo]["sum_alignment"] += e.get("evaluation", {}).get("emotion_alignment", 0)
+
+    emotion_stats = {}
+    for emo, d in emo_dict.items():
+        c = d["count"]
+        emotion_stats[emo] = {
+            "count": c,
+            "avg_satisfaction": round(d["sum_sat"] / c, 2),
+            "avg_alignment": round(d["sum_alignment"] / c, 2),
+        }
+
+    return {
+        "total_evaluated": total_count,
+        "avg_emotion_alignment": avg_emo,
+        "avg_lyric_quality": avg_lyr,
+        "avg_music_quality": avg_mus,
+        "avg_overall_satisfaction": avg_sat,
+        "overall_avg": overall_avg,
+        "rating_counts": rating_counts,
+        "emotion_stats": emotion_stats,
+    }, None
+
